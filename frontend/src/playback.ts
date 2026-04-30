@@ -66,6 +66,7 @@ export class PlaybackEngine {
     } else if (this.audio.paused && !this.audio.ended && this.audio.src) {
       this.audio.playbackRate = this.speed;
       this.playing = true;
+      this.events.onSentenceStart(this.currentIndex);
       await this.audio.play();
       return;
     }
@@ -76,6 +77,7 @@ export class PlaybackEngine {
   pause(): void {
     if (!this.audio.paused) this.audio.pause();
     this.playing = false;
+    this.events.onStop();
   }
 
   stop(): void {

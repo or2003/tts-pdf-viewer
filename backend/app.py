@@ -12,7 +12,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from engines.kokoro import KokoroEngine
-from engines.israwave import IsraWaveEngine
+from engines.edge_tts import EdgeTTSEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("pdf-reader")
@@ -27,7 +27,7 @@ app.add_middleware(
 )
 
 en_engine = KokoroEngine()
-he_engine = IsraWaveEngine()
+he_engine = EdgeTTSEngine()
 
 
 class TTSRequest(BaseModel):

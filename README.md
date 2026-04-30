@@ -1,13 +1,13 @@
 # PDF Reader
 
-A web app that reads PDFs aloud with sentence-level highlighting. Runs **fully local** on Apple Silicon (tested on MacBook Pro M3 Pro). Supports **English** and **Hebrew**.
+A web app that reads PDFs aloud with sentence-level highlighting. Tested on MacBook Pro M3 Pro. Supports **English** and **Hebrew**.
 
-- **English** → [Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M) on [mlx-audio](https://github.com/Blaizzy/mlx-audio) (Apple-native, ~100× realtime on M-series)
-- **Hebrew** → [Israwave](https://github.com/thewh1teagle/israwave) (purpose-built ONNX model with [Nakdimon](https://github.com/thewh1teagle/nakdimon-onnx) diacritization)
+- **English** → [Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M) on [mlx-audio](https://github.com/Blaizzy/mlx-audio), local (Apple-native, ~100× realtime on M-series)
+- **Hebrew** → [Microsoft Edge TTS](https://github.com/rany2/edge-tts) neural voices (cloud, no API key required, needs network at request time)
 - **PDF rendering** → PDF.js with text layer alignment for highlighting
 - **Frontend** → Vite + React + TypeScript
 
-After the one-time model download, everything runs on-device. No cloud calls during synthesis.
+English runs on-device after the one-time Kokoro download. Hebrew streams from Microsoft's public Edge TTS endpoint per request — natural neural voices, but requires network connectivity.
 
 ## Features
 
@@ -15,7 +15,7 @@ After the one-time model download, everything runs on-device. No cloud calls dur
 - The currently spoken sentence is highlighted directly on the rendered PDF.
 - Click any sentence to jump playback there.
 - Speed control (0.5×–3×) without pitch shift.
-- Auto language detection per sentence (Hebrew Unicode block → Israwave; otherwise Kokoro).
+- Auto language detection per sentence (Hebrew Unicode block → Edge TTS; otherwise Kokoro).
 - Sentences are prefetched ahead of playback, so transitions are seamless.
 
 ## Project layout
@@ -24,8 +24,8 @@ After the one-time model download, everything runs on-device. No cloud calls dur
 backend/
   app.py                   FastAPI server, POST /tts, GET /health
   engines/kokoro.py        English: Kokoro 82M via mlx-audio (lazy-loaded)
-  engines/israwave.py      Hebrew: Israwave + Nakdimon (lazy-loaded)
-  setup_models.sh          One-shot download of Israwave + Kokoro weights
+  engines/edge_tts.py      Hebrew: Microsoft Edge TTS (cloud, per-request)
+  setup_models.sh          One-shot download of Kokoro weights
   requirements.txt
 frontend/
   src/pdf.ts               PDF.js loader + page renderer with text layer
@@ -44,7 +44,8 @@ frontend/
 - **Hardware**: Apple Silicon Mac (M1/M2/M3/M4). MLX won't accelerate on Intel.
 - **Python**: 3.10+
 - **Node.js**: 18+
-- **Disk**: ~500 MB for model weights (one-time download).
+- **Disk**: ~350 MB for Kokoro weights (one-time download).
+- **Network**: required at request time for Hebrew (Edge TTS streams from Microsoft's endpoint).
 
 ## Setup
 
@@ -55,15 +56,13 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-bash setup_models.sh          # downloads all weights once, then fully offline
+bash setup_models.sh          # downloads Kokoro weights once
 python app.py                  # serves on http://127.0.0.1:8765
 ```
 
-`setup_models.sh` downloads:
-- `israwave.onnx`, `nakdimon.onnx`, and `espeak-ng-data` from the Israwave GitHub release into `backend/models/israwave/`
-- Kokoro 82M (bf16) weights into the Hugging Face cache (`~/.cache/huggingface`)
+`setup_models.sh` downloads Kokoro 82M (bf16) into the Hugging Face cache (`~/.cache/huggingface`). Edge TTS needs no pre-cache — it streams from Microsoft per request.
 
-Both engines lazy-load on first synthesis call. Subsequent calls reuse the loaded model.
+Kokoro lazy-loads on first English synthesis call. Edge TTS makes a fresh streaming request each time.
 
 ### 2. Frontend
 
@@ -85,7 +84,9 @@ Open <http://127.0.0.1:5173>, pick a PDF, hit ▶.
 | English language code | `backend/engines/kokoro.py` `DEFAULT_LANG_CODE` | `a` (American) — try `b` for British |
 | Server port | `backend/app.py` (`uvicorn.run`) | `8765` |
 | Vite proxy target | `frontend/vite.config.ts` | `127.0.0.1:8765` |
-| Israwave models dir | `ISRAWAVE_MODELS_DIR` env var | `backend/models/israwave` |
+| Hebrew voice | `EDGE_TTS_HE_VOICE` env var | `he-IL-AvriNeural` (try `he-IL-HilaNeural` for female) |
+| Hebrew speech rate | `EDGE_TTS_RATE` env var | `+0%` (e.g. `-10%` for slower) |
+| Hebrew pitch | `EDGE_TTS_PITCH` env var | `+0Hz` |
 
 Available Kokoro voices include `af_heart`, `af_bella`, `am_adam`, `bf_alice`, etc. — see the [mlx-audio readme](https://github.com/Blaizzy/mlx-audio).
 
@@ -113,13 +114,12 @@ Reports per-engine load status and sample rate.
 
 ## Troubleshooting
 
-- **`Israwave asset missing` on /tts** — run `bash backend/setup_models.sh` again; it's idempotent.
+- **Edge TTS request fails** — check network connectivity. Microsoft's endpoint occasionally rate-limits; retry usually works.
 - **`backend offline` in the UI** — the FastAPI server isn't running on 8765, or CORS is blocked. Check `python app.py` is up.
-- **Kokoro first call is slow** — yes, model loads on first request (~3-5s on M3 Pro). Subsequent requests are fast.
-- **Hebrew sounds robotic on certain words** — Hebrew without diacritics is fundamentally ambiguous; Nakdimon adds vowel marks heuristically. Fix is dataset-level, not in this app.
+- **First English synthesis is slow** — Kokoro lazy-loads on first request (~3-5s on M3 Pro). Subsequent calls are fast. Edge TTS has a steady ~1-2s/sentence latency from network round-trip.
 
 ## License
 
-The TTS models have their own licenses:
-- Kokoro: Apache 2.0
-- Israwave / Nakdimon: see their repositories
+The TTS engines have their own terms:
+- Kokoro: Apache 2.0 (model weights)
+- Edge TTS: Microsoft's public TTS endpoint, accessed via the [edge-tts](https://github.com/rany2/edge-tts) library. Use is subject to Microsoft's terms of service — not intended for production / high-volume use.
