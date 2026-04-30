@@ -32,7 +32,7 @@ fi
 echo "Israwave assets installed in $DEST"
 
 echo "Pre-caching Kokoro weights (mlx-community/Kokoro-82M-bf16)"
-python - <<'PY'
+"${SCRIPT_DIR}/.venv/bin/python" - <<'PY'
 from huggingface_hub import snapshot_download
 path = snapshot_download("mlx-community/Kokoro-82M-bf16")
 print(f"Kokoro cached at {path}")

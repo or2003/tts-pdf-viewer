@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { loadPdf, renderPage, type PdfDoc } from "../pdf";
+import { isRenderCancelled, loadPdf, renderPage, type PdfDoc, type RenderHandle } from "../pdf";
 import { buildSentences } from "../sentences";
 import type { Sentence } from "../types";
 
@@ -30,11 +30,13 @@ export default function PdfViewer({
 
   const pageSpansRef = useRef<Map<number, string[]>>(new Map());
   const renderToken = useRef(0);
+  const sentencesEmittedRef = useRef(false);
 
   useEffect(() => {
     if (!fileBuffer) {
       setDoc(null);
       pageSpansRef.current.clear();
+      sentencesEmittedRef.current = false;
       onSentencesReady([]);
       return;
     }
@@ -42,6 +44,7 @@ export default function PdfViewer({
     let cancelled = false;
     renderToken.current += 1;
     pageSpansRef.current.clear();
+    sentencesEmittedRef.current = false;
     onSentencesReady([]);
 
     loadPdf(fileBuffer.slice(0))
@@ -63,6 +66,7 @@ export default function PdfViewer({
     if (!doc) return;
     renderToken.current += 1;
     pageSpansRef.current.clear();
+    sentencesEmittedRef.current = false;
     onSentencesReady([]);
   }, [scale, doc, onSentencesReady]);
 
@@ -71,6 +75,8 @@ export default function PdfViewer({
       if (!doc) return;
       pageSpansRef.current.set(page.pageIndex, page.texts);
       if (pageSpansRef.current.size !== doc.numPages) return;
+      if (sentencesEmittedRef.current) return;
+      sentencesEmittedRef.current = true;
 
       type SpanInput = { pageIndex: number; spanIndex: number; text: string };
       const all: SpanInput[] = [];
@@ -85,6 +91,10 @@ export default function PdfViewer({
     },
     [doc, onSentencesReady],
   );
+
+  const handlePageError = useCallback((e: Error) => {
+    setError(e.message);
+  }, []);
 
   // Apply highlight class to spans of the active sentence.
   useEffect(() => {
@@ -149,7 +159,7 @@ export default function PdfViewer({
           scale={scale}
           globalSpanOffset={spanOffsets[i]}
           onReady={handlePageReady}
-          onError={(e) => setError(e.message)}
+          onError={handlePageError}
         />
       ))}
     </div>
@@ -182,6 +192,7 @@ function PageView({ doc, pageIndex, scale, globalSpanOffset, onReady, onError }:
 
   useEffect(() => {
     let cancelled = false;
+    let handle: RenderHandle | null = null;
     (async () => {
       const canvas = canvasRef.current;
       const textLayer = textLayerRef.current;
@@ -189,7 +200,8 @@ function PageView({ doc, pageIndex, scale, globalSpanOffset, onReady, onError }:
 
       const page = await doc.getPage(pageIndex + 1);
       if (cancelled) return;
-      const { spanTexts } = await renderPage(page, canvas, textLayer, scale);
+      handle = renderPage(page, canvas, textLayer, scale);
+      const { spanTexts } = await handle.promise;
       if (cancelled) return;
 
       const spans = textLayer.querySelectorAll<HTMLSpanElement>("span");
@@ -199,10 +211,12 @@ function PageView({ doc, pageIndex, scale, globalSpanOffset, onReady, onError }:
 
       onReady({ pageIndex, texts: spanTexts });
     })().catch((e) => {
-      if (!cancelled) onError(e instanceof Error ? e : new Error(String(e)));
+      if (cancelled || isRenderCancelled(e)) return;
+      onError(e instanceof Error ? e : new Error(String(e)));
     });
     return () => {
       cancelled = true;
+      handle?.cancel();
     };
   }, [doc, pageIndex, scale, globalSpanOffset, onReady, onError]);
 

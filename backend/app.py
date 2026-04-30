@@ -74,11 +74,15 @@ def tts(req: TTSRequest) -> Response:
             samples, sr = en_engine.synthesize(text)
         else:
             samples, sr = he_engine.synthesize(text)
+    except ValueError as e:
+        log.warning("tts produced no audio: %s", e)
+        raise HTTPException(422, f"no audio produced: {e}") from e
     except Exception as e:
         log.exception("tts failed")
         raise HTTPException(500, f"tts failed: {e}") from e
 
     wav = to_wav_bytes(samples, sr)
+    log.info("[TTS-DIAG] lang=%s text_len=%d samples=%d wav_bytes=%d", req.lang, len(text), int(samples.size), len(wav))
     return Response(
         content=wav,
         media_type="audio/wav",

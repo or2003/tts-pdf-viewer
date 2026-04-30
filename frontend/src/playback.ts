@@ -4,9 +4,13 @@ import { fetchSentenceAudio } from "./tts";
 interface CacheEntry {
   url: string;
   promise: Promise<string>;
+  size: number;
 }
 
 const PREFETCH_AHEAD = 2;
+const MIN_WAV_BYTES = 1000;
+const MIN_PLAYED_MS = 100;
+const MAX_CONSECUTIVE_SHORT = 2;
 
 export interface PlaybackEvents {
   onSentenceStart: (index: number) => void;
@@ -24,6 +28,7 @@ export class PlaybackEngine {
   private playing = false;
   private speed = 1;
   private events: PlaybackEvents;
+  private consecutiveShort = 0;
 
   constructor(events: PlaybackEvents) {
     this.events = events;
@@ -75,6 +80,7 @@ export class PlaybackEngine {
 
   stop(): void {
     this.playing = false;
+    this.consecutiveShort = 0;
     this.audio.pause();
     this.audio.removeAttribute("src");
     this.audio.load();
@@ -117,6 +123,12 @@ export class PlaybackEngine {
     try {
       const url = await this.ensureAudio(idx);
       if (!this.playing || this.currentIndex !== idx) return;
+      const entry = this.cache.get(idx);
+      if (entry && entry.size > 0 && entry.size < MIN_WAV_BYTES) {
+        this.playing = false;
+        this.events.onError(new Error(`empty audio for sentence ${idx} (${entry.size} bytes)`));
+        return;
+      }
       this.audio.src = url;
       this.audio.playbackRate = this.speed;
       await this.audio.play();
@@ -144,11 +156,15 @@ export class PlaybackEngine {
     const promise = fetchSentenceAudio(sentence.text, sentence.lang, ac.signal).then((blob) => {
       const url = URL.createObjectURL(blob);
       const entry = this.cache.get(idx);
-      if (entry) entry.url = url;
-      else this.cache.set(idx, { url, promise });
+      if (entry) {
+        entry.url = url;
+        entry.size = blob.size;
+      } else {
+        this.cache.set(idx, { url, promise, size: blob.size });
+      }
       return url;
     });
-    this.cache.set(idx, { url: "", promise });
+    this.cache.set(idx, { url: "", promise, size: 0 });
     return promise;
   }
 
@@ -161,6 +177,18 @@ export class PlaybackEngine {
 
   private handleEnded = (): void => {
     const idx = this.currentIndex;
+    const playedMs = (this.audio.currentTime || 0) * 1000;
+    if (playedMs < MIN_PLAYED_MS) {
+      this.consecutiveShort += 1;
+      if (this.consecutiveShort >= MAX_CONSECUTIVE_SHORT) {
+        this.playing = false;
+        this.consecutiveShort = 0;
+        this.events.onError(new Error("playback halted: empty audio (check backend log)"));
+        return;
+      }
+    } else {
+      this.consecutiveShort = 0;
+    }
     this.events.onSentenceEnd(idx);
     if (!this.playing) return;
     if (idx + 1 >= this.sentences.length) {

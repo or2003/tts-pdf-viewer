@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Tuple
 
@@ -55,20 +57,35 @@ class IsraWaveEngine:
             "sample_rate": self._sample_rate,
         }
 
+    @staticmethod
+    def _normalize(text: str) -> str:
+        s = unicodedata.normalize("NFC", text)
+        s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
     def synthesize(self, text: str) -> Tuple[np.ndarray, int]:
         self._ensure_loaded()
         assert self._speech is not None and self._niqqud is not None and self._segmenter is not None
         assert self._sample_rate is not None
 
-        vocalized = self._niqqud.compute(text)
+        cleaned = self._normalize(text)
+        vocalized = self._niqqud.compute(cleaned)
+        log.info("[TTS-DIAG] in=%r cleaned=%r vocalized=%r", text[:120], cleaned[:120], vocalized[:120])
 
         chunks: list[np.ndarray] = []
+        seg_count = 0
         for segment in self._segmenter.extract_segments(vocalized):
+            seg_count += 1
             waveform = self._speech.create(segment.text)
+            log.info("[TTS-DIAG] seg=%r samples=%d", segment.text[:80], len(waveform.samples))
             chunks.append(np.asarray(waveform.samples, dtype=np.float32).reshape(-1))
             silence = segment.create_pause(waveform.sample_rate)
             chunks.append(np.asarray(silence, dtype=np.float32).reshape(-1))
 
-        if not chunks:
-            return np.zeros(0, dtype=np.float32), self._sample_rate
+        total = sum(c.size for c in chunks)
+        log.info("[TTS-DIAG] total_samples=%d segments=%d", total, seg_count)
+
+        if not chunks or total == 0:
+            raise ValueError(f"no Hebrew segments produced (input_len={len(text)}, cleaned_len={len(cleaned)})")
         return np.concatenate(chunks), self._sample_rate

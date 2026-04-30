@@ -12,12 +12,17 @@ export async function loadPdf(data: ArrayBuffer): Promise<PdfDoc> {
   return await task.promise;
 }
 
-export async function renderPage(
+export interface RenderHandle {
+  promise: Promise<{ width: number; height: number; spanTexts: string[] }>;
+  cancel: () => void;
+}
+
+export function renderPage(
   page: PdfPage,
   canvas: HTMLCanvasElement,
   textLayerDiv: HTMLDivElement,
   scale: number,
-): Promise<{ width: number; height: number; spanTexts: string[] }> {
+): RenderHandle {
   const viewport = page.getViewport({ scale });
   const dpr = window.devicePixelRatio || 1;
 
@@ -30,37 +35,73 @@ export async function renderPage(
   if (!ctx) throw new Error("canvas 2d context unavailable");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  await page.render({ canvasContext: ctx, viewport }).promise;
+  const renderTask = page.render({ canvasContext: ctx, viewport });
+  let cancelled = false;
 
-  textLayerDiv.replaceChildren();
-  textLayerDiv.style.width = `${Math.floor(viewport.width)}px`;
-  textLayerDiv.style.height = `${Math.floor(viewport.height)}px`;
-  textLayerDiv.style.setProperty("--scale-factor", String(scale));
+  const promise = (async () => {
+    await renderTask.promise;
+    if (cancelled) throw new RenderCancelled();
 
-  const textContent = await page.getTextContent();
+    textLayerDiv.replaceChildren();
+    textLayerDiv.style.width = `${Math.floor(viewport.width)}px`;
+    textLayerDiv.style.height = `${Math.floor(viewport.height)}px`;
+    textLayerDiv.style.setProperty("--scale-factor", String(scale));
 
-  const TextLayerCtor = (pdfjsLib as unknown as { TextLayer?: new (opts: unknown) => { render: () => Promise<void> } })
-    .TextLayer;
-  if (!TextLayerCtor) {
-    throw new Error("pdfjs TextLayer not available; please use pdfjs-dist >= 4.x");
-  }
-  const textLayer = new TextLayerCtor({
-    textContentSource: textContent,
-    container: textLayerDiv,
-    viewport,
-  });
-  await textLayer.render();
+    const textContent = await page.getTextContent();
+    if (cancelled) throw new RenderCancelled();
 
-  const spans = Array.from(textLayerDiv.querySelectorAll<HTMLSpanElement>("span"));
-  const spanTexts: string[] = [];
-  spans.forEach((span, i) => {
-    span.dataset.spanIndex = String(i);
-    spanTexts.push(span.textContent ?? "");
-  });
+    const TextLayerCtor = (pdfjsLib as unknown as { TextLayer?: new (opts: unknown) => { render: () => Promise<void> } })
+      .TextLayer;
+    if (!TextLayerCtor) {
+      throw new Error("pdfjs TextLayer not available; please use pdfjs-dist >= 4.x");
+    }
+    const textLayer = new TextLayerCtor({
+      textContentSource: textContent,
+      container: textLayerDiv,
+      viewport,
+    });
+    await textLayer.render();
+    if (cancelled) throw new RenderCancelled();
+
+    const spans = Array.from(textLayerDiv.querySelectorAll<HTMLSpanElement>("span"));
+    const spanTexts: string[] = [];
+    spans.forEach((span, i) => {
+      span.dataset.spanIndex = String(i);
+      spanTexts.push(span.textContent ?? "");
+    });
+
+    return {
+      width: Math.floor(viewport.width),
+      height: Math.floor(viewport.height),
+      spanTexts,
+    };
+  })();
 
   return {
-    width: Math.floor(viewport.width),
-    height: Math.floor(viewport.height),
-    spanTexts,
+    promise,
+    cancel: () => {
+      cancelled = true;
+      try {
+        renderTask.cancel();
+      } catch {
+        // already settled
+      }
+    },
   };
+}
+
+export class RenderCancelled extends Error {
+  constructor() {
+    super("render cancelled");
+    this.name = "RenderCancelled";
+  }
+}
+
+export function isRenderCancelled(e: unknown): boolean {
+  if (e instanceof RenderCancelled) return true;
+  if (e && typeof e === "object" && "name" in e) {
+    const name = (e as { name?: string }).name;
+    return name === "RenderingCancelledException" || name === "RenderCancelled";
+  }
+  return false;
 }
