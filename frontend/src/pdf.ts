@@ -12,6 +12,20 @@ export async function loadPdf(data: ArrayBuffer): Promise<PdfDoc> {
   return await task.promise;
 }
 
+// Extract per-span text for a page without painting a canvas. Uses the same
+// `str`-bearing item filter as pdfjs TextLayer so the count/order matches the
+// <span> nodes a later renderPage() call will produce 1:1.
+export async function extractPageText(page: PdfPage): Promise<string[]> {
+  const textContent = await page.getTextContent();
+  const out: string[] = [];
+  for (const item of textContent.items) {
+    if (item && typeof item === "object" && "str" in item) {
+      out.push((item as { str: string }).str);
+    }
+  }
+  return out;
+}
+
 export interface RenderHandle {
   promise: Promise<{ width: number; height: number; spanTexts: string[] }>;
   cancel: () => void;
@@ -24,7 +38,12 @@ export function renderPage(
   scale: number,
 ): RenderHandle {
   const viewport = page.getViewport({ scale });
-  const dpr = window.devicePixelRatio || 1;
+  // Cap canvas pixel area so high-DPR mobile devices don't blow past
+  // per-canvas memory limits (iOS Safari ~16M px, much less in aggregate).
+  const MAX_AREA = 8_000_000;
+  const rawDpr = window.devicePixelRatio || 1;
+  const maxDprByArea = Math.sqrt(MAX_AREA / (viewport.width * viewport.height));
+  const dpr = Math.max(1, Math.min(rawDpr, maxDprByArea));
 
   canvas.width = Math.floor(viewport.width * dpr);
   canvas.height = Math.floor(viewport.height * dpr);
