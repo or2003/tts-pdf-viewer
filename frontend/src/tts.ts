@@ -6,6 +6,7 @@ export interface TtsRequest {
   provider: Provider;   // which upstream the Worker should dispatch to first
   rate?: string;        // "+0%"
   pitch?: string;       // "+0Hz"
+  model?: string;       // OpenAI model when provider === "openai"
 }
 
 function joinUrl(base: string, path: string): string {

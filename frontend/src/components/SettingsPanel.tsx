@@ -192,6 +192,33 @@ export default function SettingsPanel({
         </section>
 
         <section>
+          <h3>Reading</h3>
+          <label className="field check">
+            <input
+              type="checkbox"
+              checked={settings.skipHeaderFooter}
+              onChange={(e) => update("skipHeaderFooter", e.target.checked)}
+            />
+            <span>Skip page headers and footers</span>
+          </label>
+        </section>
+
+        <section>
+          <h3>OpenAI</h3>
+          <label className="field">
+            <span>Model (only used when an OpenAI voice is selected)</span>
+            <select
+              value={settings.openaiModel}
+              onChange={(e) => update("openaiModel", e.target.value)}
+            >
+              <option value="gpt-4o-mini-tts">gpt-4o-mini-tts (recommended)</option>
+              <option value="tts-1">tts-1 (cheapest)</option>
+              <option value="tts-1-hd">tts-1-hd (higher quality)</option>
+            </select>
+          </label>
+        </section>
+
+        <section>
           <h3>Prosody</h3>
           <label className="field">
             <span>Rate ({settings.rate})</span>

@@ -26,6 +26,8 @@ function loadSettings(): Settings {
     rate: "+0%",
     pitch: "+0Hz",
     workerUrl: defaultWorkerUrl(),
+    skipHeaderFooter: true,
+    openaiModel: "gpt-4o-mini-tts",
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -211,6 +213,7 @@ export default function App() {
         fileBuffer={fileBuffer}
         scale={scale}
         primaryLang={settings.primaryLang}
+        skipHeaderFooter={settings.skipHeaderFooter}
         sentences={sentences}
         highlightedSentence={highlighted}
         onSentencesReady={onSentencesReady}

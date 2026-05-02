@@ -22,7 +22,7 @@ export interface PageRender {
   spanTexts: string[];
 }
 
-export type Provider = "edge" | "google";
+export type Provider = "edge" | "google" | "openai";
 
 export interface Voice {
   shortName: string;     // e.g. "en-US-AriaNeural" or "en-US-Neural2-A"
@@ -40,4 +40,6 @@ export interface Settings {
   rate: string;                            // "+0%" .. "+50%" .. "-25%"
   pitch: string;                           // "+0Hz" .. "+5Hz" .. "-5Hz"
   workerUrl: string;                       // base URL of the tts-relay Worker
+  skipHeaderFooter: boolean;               // detect & skip recurring page headers/footers
+  openaiModel: string;                     // OpenAI TTS model — used when an OpenAI voice is selected
 }
