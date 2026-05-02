@@ -30,13 +30,67 @@ interface PageDim {
 
 const ACTIVE_RADIUS = isMobileEnv() ? 0 : 1;
 
-// Header/footer detection thresholds.
-const BAND_FRAC = 0.10;            // top/bottom 10% of page = candidate band
-const REPEAT_THRESHOLD = 0.7;      // >=70% of pages must repeat a normalized line
-const FALLBACK_BAND_FRAC = 0.05;   // when detection is inconclusive, trim top/bottom 5%
+// Header/footer detection. We group each page's items into visual "lines" by
+// y-coordinate, then grow the topmost N (resp. bottommost N) lines until their
+// combined signature stops repeating across pages. The largest N that still
+// repeats is the actual header (resp. footer) on every page that matches.
+const LINE_GROUP_TOL = 4;     // items within ~4pt of each other share a line
+const HEADER_MAX_LINES = 3;   // cap header / footer growth
+const REPEAT_THRESHOLD = 0.7;
 
 function normalizeBandText(s: string): string {
-  return s.trim().toLowerCase().replace(/\d+/g, "");
+  // Replace digit runs with `#` (rather than dropping) so pure-page-number
+  // headers like "1", "2", "3"… still collapse to a common signature.
+  return s.trim().toLowerCase().replace(/\d+/g, "#");
+}
+
+interface LineGroup {
+  yTop: number;
+  indices: number[];
+  normParts: string[];
+}
+
+function groupLines(info: PageSpanInfo): LineGroup[] {
+  const sorted: { idx: number; y: number }[] = [];
+  for (let j = 0; j < info.texts.length; j++) {
+    const y = info.yCoords[j];
+    if (y == null) continue;
+    sorted.push({ idx: j, y });
+  }
+  sorted.sort((a, b) => b.y - a.y);
+
+  const lines: LineGroup[] = [];
+  let cur: LineGroup | null = null;
+  for (const it of sorted) {
+    if (cur == null || cur.yTop - it.y > LINE_GROUP_TOL) {
+      cur = { yTop: it.y, indices: [], normParts: [] };
+      lines.push(cur);
+    }
+    cur.indices.push(it.idx);
+    const n = normalizeBandText(info.texts[it.idx]);
+    if (n) cur.normParts.push(n);
+  }
+  // Drop "noise" lines that contain only whitespace/empty items — they'd
+  // otherwise shadow real headers/footers (e.g., a stray empty span at the
+  // very bottom of a page hiding the page-number line above it).
+  return lines.filter((l) => l.normParts.length > 0);
+}
+
+function dominantCount(sigs: string[]): { sig: string; count: number } {
+  const counts = new Map<string, number>();
+  for (const s of sigs) {
+    if (!s) continue;
+    counts.set(s, (counts.get(s) ?? 0) + 1);
+  }
+  let bestSig = "";
+  let bestC = 0;
+  for (const [s, c] of counts) {
+    if (c > bestC) {
+      bestC = c;
+      bestSig = s;
+    }
+  }
+  return { sig: bestSig, count: bestC };
 }
 
 function computeSkipSets(
@@ -47,81 +101,93 @@ function computeSkipSets(
   const skip: Set<number>[] = Array.from({ length: numPages }, () => new Set<number>());
   if (!enabled || numPages === 0) return skip;
 
-  // Per-page band signatures + the indices each band covers. Signature is the
-  // concat of normalized texts in the band — digits stripped — so "...from 2022"
-  // and "...from 2023" produce the same signature, and a span that is *only* a
-  // year/page-number still gets dropped because the whole band is dropped on
-  // pages whose signature repeats across the doc.
-  const headerSigs: string[] = new Array(numPages).fill("");
-  const footerSigs: string[] = new Array(numPages).fill("");
-  const headerIdx: number[][] = Array.from({ length: numPages }, () => []);
-  const footerIdx: number[][] = Array.from({ length: numPages }, () => []);
-
+  const linesByPage: LineGroup[][] = new Array(numPages);
   for (let i = 0; i < numPages; i++) {
     const info = pageInfos.get(i);
-    if (!info) continue;
-    const headerY = info.pageH * (1 - BAND_FRAC);
-    const footerY = info.pageH * BAND_FRAC;
-    const hParts: string[] = [];
-    const fParts: string[] = [];
-    for (let j = 0; j < info.texts.length; j++) {
-      const y = info.yCoords[j];
-      if (y == null) continue;
-      if (y >= headerY) {
-        const n = normalizeBandText(info.texts[j]);
-        if (n) hParts.push(n);
-        headerIdx[i].push(j);
-      } else if (y <= footerY) {
-        const n = normalizeBandText(info.texts[j]);
-        if (n) fParts.push(n);
-        footerIdx[i].push(j);
-      }
-    }
-    headerSigs[i] = hParts.join(" ");
-    footerSigs[i] = fParts.join(" ");
+    linesByPage[i] = info ? groupLines(info) : [];
   }
-
-  const countSigs = (sigs: string[]): Map<string, number> => {
-    const m = new Map<string, number>();
-    for (const s of sigs) {
-      if (!s) continue;
-      m.set(s, (m.get(s) ?? 0) + 1);
-    }
-    return m;
-  };
-  const headerCounts = countSigs(headerSigs);
-  const footerCounts = countSigs(footerSigs);
   const need = Math.max(2, Math.ceil(numPages * REPEAT_THRESHOLD));
-  const headerSigSkip = new Set<string>();
-  const footerSigSkip = new Set<string>();
-  for (const [s, c] of headerCounts) if (c >= need) headerSigSkip.add(s);
-  for (const [s, c] of footerCounts) if (c >= need) footerSigSkip.add(s);
 
-  const fallbackHeader = headerSigSkip.size === 0 && numPages >= 3;
-  const fallbackFooter = footerSigSkip.size === 0 && numPages >= 3;
-
-  for (let i = 0; i < numPages; i++) {
-    const info = pageInfos.get(i);
-    if (!info) continue;
-    if (headerSigs[i] && headerSigSkip.has(headerSigs[i])) {
-      for (const j of headerIdx[i]) skip[i].add(j);
-    } else if (fallbackHeader) {
-      const fallbackHeaderY = info.pageH * (1 - FALLBACK_BAND_FRAC);
-      for (const j of headerIdx[i]) {
-        const y = info.yCoords[j];
-        if (y != null && y >= fallbackHeaderY) skip[i].add(j);
+  // Greedy growth from one end: try N=1, 2, … and keep the largest N whose
+  // dominant signature still repeats on >=70% of pages.
+  type FromEnd = "top" | "bottom";
+  function detect(end: FromEnd): { n: number; sig: string } {
+    let bestN = 0;
+    let bestSig = "";
+    for (let n = 1; n <= HEADER_MAX_LINES; n++) {
+      const sigs = linesByPage.map((lines) => {
+        if (lines.length < n) return "";
+        const slice = end === "top" ? lines.slice(0, n) : lines.slice(-n);
+        return slice.map((l) => l.normParts.join(" ")).join("|");
+      });
+      const { sig, count } = dominantCount(sigs);
+      if (count >= need) {
+        bestN = n;
+        bestSig = sig;
+      } else {
+        break;
       }
     }
-    if (footerSigs[i] && footerSigSkip.has(footerSigs[i])) {
-      for (const j of footerIdx[i]) skip[i].add(j);
-    } else if (fallbackFooter) {
-      const fallbackFooterY = info.pageH * FALLBACK_BAND_FRAC;
-      for (const j of footerIdx[i]) {
-        const y = info.yCoords[j];
-        if (y != null && y <= fallbackFooterY) skip[i].add(j);
+    return { n: bestN, sig: bestSig };
+  }
+
+  const header = detect("top");
+  const footer = detect("bottom");
+
+  for (let i = 0; i < numPages; i++) {
+    const lines = linesByPage[i];
+    if (lines.length === 0) continue;
+    const totalNeeded = header.n + footer.n;
+    // If skipping both would wipe the page, prefer footer (page-number-style
+    // chrome) and keep the header as content. If only one fits, do that one.
+    const canHeader = header.n > 0 && lines.length > header.n;
+    const canFooter = footer.n > 0 && lines.length > footer.n;
+    const canBoth = lines.length > totalNeeded;
+
+    if (canHeader && (canBoth || !canFooter)) {
+      const slice = lines.slice(0, header.n);
+      const sig = slice.map((l) => l.normParts.join(" ")).join("|");
+      if (sig === header.sig) {
+        for (const ln of slice) for (const j of ln.indices) skip[i].add(j);
+      }
+    }
+    if (canFooter) {
+      const slice = lines.slice(-footer.n);
+      const sig = slice.map((l) => l.normParts.join(" ")).join("|");
+      if (sig === footer.sig) {
+        for (const ln of slice) for (const j of ln.indices) skip[i].add(j);
       }
     }
   }
+
+  // Item-level fallback: when whole-line detection fails (typical for tight
+  // Hebrew layouts where nikud/baseline jitter merges page-number items into
+  // the same y-cluster as adjacent body items), recurring `#` tokens in the
+  // top/bottom line are almost certainly page numbers / year markers. Pure-
+  // digit tokens are the only thing this matches, so it never trims real text.
+  const skipHashIfRecurring = (end: "top" | "bottom") => {
+    let pagesWithHash = 0;
+    for (let i = 0; i < numPages; i++) {
+      const lines = linesByPage[i];
+      if (lines.length === 0) continue;
+      const ln = end === "top" ? lines[0] : lines[lines.length - 1];
+      if (ln.normParts.includes("#")) pagesWithHash++;
+    }
+    if (pagesWithHash < need) return;
+    for (let i = 0; i < numPages; i++) {
+      const lines = linesByPage[i];
+      if (lines.length === 0) continue;
+      const info = pageInfos.get(i);
+      if (!info) continue;
+      const ln = end === "top" ? lines[0] : lines[lines.length - 1];
+      for (const j of ln.indices) {
+        if (normalizeBandText(info.texts[j]) === "#") skip[i].add(j);
+      }
+    }
+  };
+  if (header.n === 0) skipHashIfRecurring("top");
+  if (footer.n === 0) skipHashIfRecurring("bottom");
+
   return skip;
 }
 
