@@ -1,8 +1,8 @@
 import type { Voice } from "./types";
 import { fetchVoices } from "./tts";
 
-// v2 — voices now carry a `provider` field (edge | google).
-const CACHE_KEY = "tts.voices.v2";
+// v4 — OpenAI voices now expanded per (model × voice), with `openaiModel` field.
+const CACHE_KEY = "tts.voices.v4";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface CacheShape {

@@ -216,6 +216,7 @@ export class PlaybackEngine {
         provider: voice.provider,
         rate: this.settings.rate,
         pitch: this.settings.pitch,
+        model: voice.openaiModel,
       },
       ac.signal,
     ).then((blob) => {

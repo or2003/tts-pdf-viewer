@@ -192,6 +192,18 @@ export default function SettingsPanel({
         </section>
 
         <section>
+          <h3>Reading</h3>
+          <label className="field check">
+            <input
+              type="checkbox"
+              checked={settings.skipHeaderFooter}
+              onChange={(e) => update("skipHeaderFooter", e.target.checked)}
+            />
+            <span>Skip page headers and footers</span>
+          </label>
+        </section>
+
+        <section>
           <h3>Prosody</h3>
           <label className="field">
             <span>Rate ({settings.rate})</span>

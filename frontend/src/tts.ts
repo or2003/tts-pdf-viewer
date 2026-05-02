@@ -6,6 +6,7 @@ export interface TtsRequest {
   provider: Provider;   // which upstream the Worker should dispatch to first
   rate?: string;        // "+0%"
   pitch?: string;       // "+0Hz"
+  model?: string;       // OpenAI model when provider === "openai"
 }
 
 function joinUrl(base: string, path: string): string {
@@ -38,6 +39,7 @@ interface RawVoice {
   FriendlyName?: string;
   DisplayName?: string;
   provider?: Provider;
+  openaiModel?: string;
 }
 
 export async function fetchVoices(workerUrl: string, signal?: AbortSignal): Promise<Voice[]> {
@@ -54,5 +56,6 @@ export async function fetchVoices(workerUrl: string, signal?: AbortSignal): Prom
     displayName: v.DisplayName ?? v.FriendlyName ?? v.ShortName,
     friendlyName: v.FriendlyName ?? v.ShortName,
     provider: v.provider ?? "edge",
+    openaiModel: v.openaiModel,
   }));
 }

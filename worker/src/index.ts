@@ -34,7 +34,41 @@ const FALLBACK_DEFAULTS: Record<string, { google: string; edge: string }> = {
 interface Env {
 	ALLOWED_ORIGINS?: string;
 	GOOGLE_API_KEY?: string;
+	OPENAI_API_KEY?: string;
 }
+
+// ─── OpenAI TTS (paid API, gpt-4o-mini-tts / tts-1 / tts-1-hd) ───────────────
+
+const OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech";
+const OPENAI_VOICES = [
+	{ name: "alloy", gender: "Neutral" },
+	{ name: "ash", gender: "Male" },
+	{ name: "ballad", gender: "Male" },
+	{ name: "coral", gender: "Female" },
+	{ name: "echo", gender: "Male" },
+	{ name: "fable", gender: "Male" },
+	{ name: "nova", gender: "Female" },
+	{ name: "onyx", gender: "Male" },
+	{ name: "sage", gender: "Female" },
+	{ name: "shimmer", gender: "Female" },
+	{ name: "verse", gender: "Male" },
+] as const;
+const OPENAI_DEFAULT_MODEL = "gpt-4o-mini-tts";
+const OPENAI_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"] as const;
+const OPENAI_ALLOWED_MODELS = new Set<string>(OPENAI_MODELS);
+// tts-1 / tts-1-hd only support the original 6 voices; the newer voices
+// (ash/ballad/coral/sage/verse) require gpt-4o-mini-tts.
+const OPENAI_LEGACY_VOICES = new Set<string>(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]);
+// Curated list of language prefixes the OpenAI voices speak well. Each voice
+// is registered once per locale so it shows up in the per-language voice
+// dropdown alongside Edge/Google voices.
+const OPENAI_LOCALES = [
+	"en-US", "he-IL", "ar-SA", "es-ES", "fr-FR", "de-DE", "zh-CN", "ja-JP",
+	"ko-KR", "ru-RU", "pt-BR", "it-IT", "pl-PL", "nl-NL", "tr-TR", "sv-SE",
+	"cs-CZ", "da-DK", "fi-FI", "no-NO", "hi-IN", "hu-HU", "id-ID", "th-TH",
+	"vi-VN", "uk-UA", "el-GR", "ro-RO", "sk-SK", "ms-MY",
+] as const;
+const OPENAI_VOICE_PREFIX = "openai-";
 
 const DEFAULT_ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
 
@@ -220,6 +254,57 @@ async function synthesizeGoogle(text: string, voice: string, rate: string, pitch
 	return base64ToBytes(data.audioContent);
 }
 
+// Parse `openai-<model>-<voiceName>` ShortNames. Voice names are simple
+// alphanumeric tokens with no hyphens, so the trailing `-<voiceName>` always
+// terminates the model. Returns null if the ShortName isn't an OpenAI voice.
+function parseOpenAIShortName(shortName: string): { model: string; voice: string } | null {
+	if (!shortName.startsWith(OPENAI_VOICE_PREFIX)) return null;
+	const rest = shortName.slice(OPENAI_VOICE_PREFIX.length);
+	const lastDash = rest.lastIndexOf("-");
+	if (lastDash <= 0) return { model: OPENAI_DEFAULT_MODEL, voice: rest };
+	const model = rest.slice(0, lastDash);
+	const voice = rest.slice(lastDash + 1);
+	return { model, voice };
+}
+
+async function synthesizeOpenAI(
+	text: string,
+	voice: string,
+	rate: string,
+	model: string,
+	apiKey: string,
+): Promise<Uint8Array> {
+	// Either the ShortName encodes (model, voice) — preferred — or a bare voice
+	// id like `openai-nova` is paired with an explicit `model` field.
+	const parsed = parseOpenAIShortName(voice);
+	const openaiVoice = parsed ? parsed.voice : voice;
+	const inferredModel = parsed?.model;
+	const candidate = inferredModel || model;
+	const useModel = OPENAI_ALLOWED_MODELS.has(candidate) ? candidate : OPENAI_DEFAULT_MODEL;
+	const speed = Math.max(0.25, Math.min(4, 1 + parsePercent(rate, 0) / 100));
+
+	const resp = await fetch(OPENAI_TTS_URL, {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${apiKey}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			model: useModel,
+			input: text,
+			voice: openaiVoice,
+			response_format: "mp3",
+			speed,
+		}),
+	});
+	if (!resp.ok) {
+		const detail = await resp.text().catch(() => "");
+		throw new Error(`OpenAI TTS failed (${resp.status}): ${detail.slice(0, 200)}`);
+	}
+	const buf = await resp.arrayBuffer();
+	return new Uint8Array(buf);
+}
+
 // ─── Voice catalogs ──────────────────────────────────────────────────────────
 
 interface UnifiedVoice {
@@ -228,7 +313,8 @@ interface UnifiedVoice {
 	Gender: string;
 	FriendlyName: string;
 	DisplayName: string;
-	provider: "edge" | "google";
+	provider: "edge" | "google" | "openai";
+	openaiModel?: string;
 }
 
 interface RawEdgeVoice {
@@ -261,6 +347,29 @@ async function fetchEdgeVoices(): Promise<UnifiedVoice[]> {
 	}));
 }
 
+function buildOpenAIVoices(): UnifiedVoice[] {
+	const out: UnifiedVoice[] = [];
+	for (const locale of OPENAI_LOCALES) {
+		for (const model of OPENAI_MODELS) {
+			for (const v of OPENAI_VOICES) {
+				// tts-1 / tts-1-hd only support the original 6 voices.
+				if (model !== "gpt-4o-mini-tts" && !OPENAI_LEGACY_VOICES.has(v.name)) continue;
+				const display = `OpenAI ${v.name} (${model})`;
+				out.push({
+					ShortName: `${OPENAI_VOICE_PREFIX}${model}-${v.name}`,
+					Locale: locale,
+					Gender: v.gender,
+					FriendlyName: display,
+					DisplayName: display,
+					provider: "openai",
+					openaiModel: model,
+				});
+			}
+		}
+	}
+	return out;
+}
+
 async function fetchGoogleVoices(apiKey: string): Promise<UnifiedVoice[]> {
 	const r = await fetch(`${GOOGLE_VOICES_URL}?key=${encodeURIComponent(apiKey)}`);
 	if (!r.ok) throw new Error(`Google voices ${r.status}`);
@@ -288,7 +397,7 @@ async function fetchGoogleVoices(apiKey: string): Promise<UnifiedVoice[]> {
 
 // ─── /tts dispatch with fallback ─────────────────────────────────────────────
 
-type Provider = "edge" | "google";
+type Provider = "edge" | "google" | "openai";
 
 interface TtsBody {
 	text?: string;
@@ -296,25 +405,31 @@ interface TtsBody {
 	rate?: string;
 	pitch?: string;
 	provider?: Provider;
+	model?: string; // OpenAI model when provider === "openai"
 }
 
-function pickFallbackVoice(originalVoice: string, target: Provider): string | null {
+function pickFallbackVoice(originalVoice: string, target: Exclude<Provider, "openai">): string | null {
 	const locale = localeFromVoice(originalVoice);
 	const entry = FALLBACK_DEFAULTS[locale];
 	return entry ? entry[target] : null;
 }
 
 async function synthesizeWithFallback(
-	body: Required<Pick<TtsBody, "text" | "voice" | "rate" | "pitch">> & { provider: Provider },
+	body: Required<Pick<TtsBody, "text" | "voice" | "rate" | "pitch">> & { provider: Provider; model: string },
 	env: Env,
 ): Promise<{ audio: Uint8Array; usedProvider: Provider; usedFallback: boolean }> {
 	let primary = body.provider;
 	if (primary === "google" && !env.GOOGLE_API_KEY) primary = "edge";
+	if (primary === "openai" && !env.OPENAI_API_KEY) primary = "edge";
 
 	const tryOne = async (p: Provider, voice: string): Promise<Uint8Array> => {
 		if (p === "google") {
 			if (!env.GOOGLE_API_KEY) throw new Error("Google TTS not configured");
 			return await synthesizeGoogle(body.text, voice, body.rate, body.pitch, env.GOOGLE_API_KEY);
+		}
+		if (p === "openai") {
+			if (!env.OPENAI_API_KEY) throw new Error("OpenAI TTS not configured");
+			return await synthesizeOpenAI(body.text, voice, body.rate, body.model, env.OPENAI_API_KEY);
 		}
 		return await synthesizeEdge(body.text, voice, body.rate, body.pitch);
 	};
@@ -323,16 +438,15 @@ async function synthesizeWithFallback(
 		const audio = await tryOne(primary, body.voice);
 		return { audio, usedProvider: primary, usedFallback: false };
 	} catch (primaryErr) {
-		const secondary: Provider = primary === "google" ? "edge" : "google";
-		if (secondary === "google" && !env.GOOGLE_API_KEY) throw primaryErr;
+		// Always fall back to Edge (free, always available).
+		if (primary === "edge") throw primaryErr;
+		const fallbackLocaleVoice = pickFallbackVoice(body.voice, "edge");
+		const fallbackVoice = fallbackLocaleVoice ?? "en-US-AriaNeural";
 
-		const fallbackVoice = pickFallbackVoice(body.voice, secondary);
-		if (!fallbackVoice) throw primaryErr;
-
-		console.log(`[tts] ${primary} failed (${primaryErr instanceof Error ? primaryErr.message : primaryErr}), retrying via ${secondary} with ${fallbackVoice}`);
+		console.log(`[tts] ${primary} failed (${primaryErr instanceof Error ? primaryErr.message : primaryErr}), retrying via edge with ${fallbackVoice}`);
 		try {
-			const audio = await tryOne(secondary, fallbackVoice);
-			return { audio, usedProvider: secondary, usedFallback: true };
+			const audio = await tryOne("edge", fallbackVoice);
+			return { audio, usedProvider: "edge", usedFallback: true };
 		} catch (secondaryErr) {
 			console.log(`[tts] fallback also failed: ${secondaryErr instanceof Error ? secondaryErr.message : secondaryErr}`);
 			throw primaryErr;
@@ -352,7 +466,11 @@ export default {
 
 		if (url.pathname === "/health") {
 			return new Response(
-				JSON.stringify({ status: "ok", googleEnabled: Boolean(env.GOOGLE_API_KEY) }),
+				JSON.stringify({
+					status: "ok",
+					googleEnabled: Boolean(env.GOOGLE_API_KEY),
+					openaiEnabled: Boolean(env.OPENAI_API_KEY),
+				}),
 				{ headers: { ...cors, "Content-Type": "application/json" } },
 			);
 		}
@@ -366,6 +484,7 @@ export default {
 			const merged: UnifiedVoice[] = [];
 			if (googleRes && googleRes.status === "fulfilled") merged.push(...googleRes.value);
 			if (edgeRes.status === "fulfilled") merged.push(...edgeRes.value);
+			if (env.OPENAI_API_KEY) merged.push(...buildOpenAIVoices());
 			if (merged.length === 0) {
 				const reason = edgeRes.status === "rejected" ? edgeRes.reason : "no providers available";
 				return new Response(`Voices unavailable: ${reason}`, { status: 502, headers: cors });
@@ -390,11 +509,15 @@ export default {
 			const voice = (body.voice ?? "").trim();
 			const rate = body.rate ?? "+0%";
 			const pitch = body.pitch ?? "+0Hz";
-			const provider: Provider = body.provider === "google" || body.provider === "edge" ? body.provider : "edge";
+			const provider: Provider =
+				body.provider === "google" || body.provider === "edge" || body.provider === "openai"
+					? body.provider
+					: "edge";
+			const model = (body.model ?? OPENAI_DEFAULT_MODEL).trim() || OPENAI_DEFAULT_MODEL;
 			if (!text) return new Response("Missing text", { status: 400, headers: cors });
 			if (!voice) return new Response("Missing voice", { status: 400, headers: cors });
 			try {
-				const result = await synthesizeWithFallback({ text, voice, rate, pitch, provider }, env);
+				const result = await synthesizeWithFallback({ text, voice, rate, pitch, provider, model }, env);
 				return new Response(result.audio, {
 					headers: {
 						...cors,
