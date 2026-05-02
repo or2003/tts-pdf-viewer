@@ -128,6 +128,24 @@ export default function App() {
     setCurrentIndex(-1);
   }, [sentences]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" && e.key !== " ") return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable) return;
+      }
+      e.preventDefault();
+      const engine = engineRef.current;
+      if (!engine) return;
+      if (isPlaying) engine.pause();
+      else void engine.play();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isPlaying]);
+
   const handleFile = useCallback(async (file: File | null) => {
     if (!file) {
       setFileBuffer(null);
