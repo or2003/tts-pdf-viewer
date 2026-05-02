@@ -62,7 +62,6 @@ export class PlaybackEngine {
       this.settings.workerUrl !== next.workerUrl ||
       this.settings.rate !== next.rate ||
       this.settings.pitch !== next.pitch ||
-      this.settings.openaiModel !== next.openaiModel ||
       JSON.stringify(this.settings.voicesByLang) !== JSON.stringify(next.voicesByLang) ||
       this.settings.primaryLang !== next.primaryLang;
     this.settings = next;
@@ -217,7 +216,7 @@ export class PlaybackEngine {
         provider: voice.provider,
         rate: this.settings.rate,
         pitch: this.settings.pitch,
-        model: voice.provider === "openai" ? this.settings.openaiModel : undefined,
+        model: voice.openaiModel,
       },
       ac.signal,
     ).then((blob) => {

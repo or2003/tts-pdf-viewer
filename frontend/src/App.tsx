@@ -27,7 +27,6 @@ function loadSettings(): Settings {
     pitch: "+0Hz",
     workerUrl: defaultWorkerUrl(),
     skipHeaderFooter: true,
-    openaiModel: "gpt-4o-mini-tts",
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);

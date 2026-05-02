@@ -54,7 +54,11 @@ const OPENAI_VOICES = [
 	{ name: "verse", gender: "Male" },
 ] as const;
 const OPENAI_DEFAULT_MODEL = "gpt-4o-mini-tts";
-const OPENAI_ALLOWED_MODELS = new Set(["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]);
+const OPENAI_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"] as const;
+const OPENAI_ALLOWED_MODELS = new Set<string>(OPENAI_MODELS);
+// tts-1 / tts-1-hd only support the original 6 voices; the newer voices
+// (ash/ballad/coral/sage/verse) require gpt-4o-mini-tts.
+const OPENAI_LEGACY_VOICES = new Set<string>(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]);
 // Curated list of language prefixes the OpenAI voices speak well. Each voice
 // is registered once per locale so it shows up in the per-language voice
 // dropdown alongside Edge/Google voices.
@@ -250,6 +254,19 @@ async function synthesizeGoogle(text: string, voice: string, rate: string, pitch
 	return base64ToBytes(data.audioContent);
 }
 
+// Parse `openai-<model>-<voiceName>` ShortNames. Voice names are simple
+// alphanumeric tokens with no hyphens, so the trailing `-<voiceName>` always
+// terminates the model. Returns null if the ShortName isn't an OpenAI voice.
+function parseOpenAIShortName(shortName: string): { model: string; voice: string } | null {
+	if (!shortName.startsWith(OPENAI_VOICE_PREFIX)) return null;
+	const rest = shortName.slice(OPENAI_VOICE_PREFIX.length);
+	const lastDash = rest.lastIndexOf("-");
+	if (lastDash <= 0) return { model: OPENAI_DEFAULT_MODEL, voice: rest };
+	const model = rest.slice(0, lastDash);
+	const voice = rest.slice(lastDash + 1);
+	return { model, voice };
+}
+
 async function synthesizeOpenAI(
 	text: string,
 	voice: string,
@@ -257,11 +274,14 @@ async function synthesizeOpenAI(
 	model: string,
 	apiKey: string,
 ): Promise<Uint8Array> {
-	const openaiVoice = voice.startsWith(OPENAI_VOICE_PREFIX)
-		? voice.slice(OPENAI_VOICE_PREFIX.length)
-		: voice;
+	// Either the ShortName encodes (model, voice) — preferred — or a bare voice
+	// id like `openai-nova` is paired with an explicit `model` field.
+	const parsed = parseOpenAIShortName(voice);
+	const openaiVoice = parsed ? parsed.voice : voice;
+	const inferredModel = parsed?.model;
+	const candidate = inferredModel || model;
+	const useModel = OPENAI_ALLOWED_MODELS.has(candidate) ? candidate : OPENAI_DEFAULT_MODEL;
 	const speed = Math.max(0.25, Math.min(4, 1 + parsePercent(rate, 0) / 100));
-	const useModel = OPENAI_ALLOWED_MODELS.has(model) ? model : OPENAI_DEFAULT_MODEL;
 
 	const resp = await fetch(OPENAI_TTS_URL, {
 		method: "POST",
@@ -294,6 +314,7 @@ interface UnifiedVoice {
 	FriendlyName: string;
 	DisplayName: string;
 	provider: "edge" | "google" | "openai";
+	openaiModel?: string;
 }
 
 interface RawEdgeVoice {
@@ -329,15 +350,21 @@ async function fetchEdgeVoices(): Promise<UnifiedVoice[]> {
 function buildOpenAIVoices(): UnifiedVoice[] {
 	const out: UnifiedVoice[] = [];
 	for (const locale of OPENAI_LOCALES) {
-		for (const v of OPENAI_VOICES) {
-			out.push({
-				ShortName: `${OPENAI_VOICE_PREFIX}${v.name}`,
-				Locale: locale,
-				Gender: v.gender,
-				FriendlyName: `OpenAI ${v.name}`,
-				DisplayName: `OpenAI ${v.name}`,
-				provider: "openai",
-			});
+		for (const model of OPENAI_MODELS) {
+			for (const v of OPENAI_VOICES) {
+				// tts-1 / tts-1-hd only support the original 6 voices.
+				if (model !== "gpt-4o-mini-tts" && !OPENAI_LEGACY_VOICES.has(v.name)) continue;
+				const display = `OpenAI ${v.name} (${model})`;
+				out.push({
+					ShortName: `${OPENAI_VOICE_PREFIX}${model}-${v.name}`,
+					Locale: locale,
+					Gender: v.gender,
+					FriendlyName: display,
+					DisplayName: display,
+					provider: "openai",
+					openaiModel: model,
+				});
+			}
 		}
 	}
 	return out;

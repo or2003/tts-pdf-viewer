@@ -32,6 +32,7 @@ export interface Voice {
   displayName: string;   // human-readable name
   friendlyName: string;  // longer marketing name from the API
   provider: Provider;    // which upstream synthesizes this voice
+  openaiModel?: string;  // OpenAI model baked into this voice (provider="openai" only)
 }
 
 export interface Settings {
@@ -41,5 +42,4 @@ export interface Settings {
   pitch: string;                           // "+0Hz" .. "+5Hz" .. "-5Hz"
   workerUrl: string;                       // base URL of the tts-relay Worker
   skipHeaderFooter: boolean;               // detect & skip recurring page headers/footers
-  openaiModel: string;                     // OpenAI TTS model — used when an OpenAI voice is selected
 }
