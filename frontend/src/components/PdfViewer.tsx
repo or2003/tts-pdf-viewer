@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  extractPageText,
+  extractPageSpanTexts,
   isRenderCancelled,
   loadPdf,
   renderPage,
@@ -101,7 +101,7 @@ export default function PdfViewer({
         if (cancelled || passToken.current !== myToken) return;
         const page = await doc.getPage(i + 1);
         if (cancelled || passToken.current !== myToken) return;
-        const texts = await extractPageText(page);
+        const texts = await extractPageSpanTexts(page);
         if (cancelled || passToken.current !== myToken) return;
         pageSpansRef.current.set(i, texts);
       }
@@ -382,6 +382,9 @@ function PageView({ doc, pageIndex, scale, globalSpanOffset, registerEl, onError
       await handle.promise;
       if (cancelled) return;
 
+      // Match the upfront pass enumeration in extractPageSpanTexts: every <span>
+      // in tree order, including pdfjs marked-content wrapper spans. Self-
+      // consistency is what matters, not item-vs-DOM equivalence.
       const spans = textLayer.querySelectorAll<HTMLSpanElement>("span");
       spans.forEach((span, i) => {
         span.dataset.globalSpanIndex = String(globalSpanOffset + i);

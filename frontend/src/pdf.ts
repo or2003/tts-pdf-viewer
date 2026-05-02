@@ -12,17 +12,26 @@ export async function loadPdf(data: ArrayBuffer): Promise<PdfDoc> {
   return await task.promise;
 }
 
-// Extract per-span text for a page without painting a canvas. Uses the same
-// `str`-bearing item filter as pdfjs TextLayer so the count/order matches the
-// <span> nodes a later renderPage() call will produce 1:1.
-export async function extractPageText(page: PdfPage): Promise<string[]> {
+// Extract per-span text for a page WITHOUT painting a canvas. Renders pdfjs
+// TextLayer into a detached <div> and reads back DOM spans the same way
+// renderPage() does on the visible textLayer, so sentence-list indices and
+// the visible page's `data-global-span-index` stamps stay in lockstep —
+// including pdfjs marked-content wrapper spans, EOL-only spans, etc.
+export async function extractPageSpanTexts(page: PdfPage): Promise<string[]> {
+  const viewport = page.getViewport({ scale: 1 });
   const textContent = await page.getTextContent();
-  const out: string[] = [];
-  for (const item of textContent.items) {
-    if (item && typeof item === "object" && "str" in item) {
-      out.push((item as { str: string }).str);
-    }
+  const div = document.createElement("div");
+  div.style.setProperty("--scale-factor", "1");
+  const TextLayerCtor = (pdfjsLib as unknown as {
+    TextLayer?: new (opts: unknown) => { render: () => Promise<void> };
+  }).TextLayer;
+  if (!TextLayerCtor) {
+    throw new Error("pdfjs TextLayer not available; please use pdfjs-dist >= 4.x");
   }
+  const layer = new TextLayerCtor({ textContentSource: textContent, container: div, viewport });
+  await layer.render();
+  const out: string[] = [];
+  div.querySelectorAll<HTMLSpanElement>("span").forEach((s) => out.push(s.textContent ?? ""));
   return out;
 }
 
