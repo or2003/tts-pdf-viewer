@@ -1,0 +1,10 @@
+# Copy this file to `.dev.vars` and fill in real values for local `wrangler dev`.
+# `.dev.vars` is gitignored. Do NOT commit secrets.
+#
+# When the Worker is deployed, the same names must be set as Worker secrets
+# (the GitHub Actions deploy workflow pushes them automatically from repo
+# secrets — see ../README.md "Deploy" section).
+
+# Google Cloud Text-to-Speech API key. Used as the primary TTS provider.
+# If unset, the Worker silently falls back to Microsoft Edge TTS (free, no key).
+GOOGLE_API_KEY=

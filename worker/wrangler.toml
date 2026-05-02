@@ -1,0 +1,11 @@
+name = "tts-relay"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+
+[dev]
+port = 8787
+
+# Comma-separated list of origins the Worker will respond to with CORS headers.
+# Add custom domains here as needed.
+[vars]
+ALLOWED_ORIGINS = "https://or2003.github.io,http://localhost:5173,http://127.0.0.1:5173"
