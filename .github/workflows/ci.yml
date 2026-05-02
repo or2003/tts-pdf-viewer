@@ -33,7 +33,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_WORKER_URL: ${{ vars.WORKER_URL || 'http://127.0.0.1:8787' }}
-          VITE_BASE: /new_projects_playground/
+          VITE_BASE: /tts-pdf-viewer/
         run: npm run build
 
       - name: Install worker deps

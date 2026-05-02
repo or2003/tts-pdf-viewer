@@ -69,7 +69,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_WORKER_URL: ${{ vars.WORKER_URL }}
-          VITE_BASE: /new_projects_playground/
+          VITE_BASE: /tts-pdf-viewer/
         run: npm run build
 
       - name: Configure Pages

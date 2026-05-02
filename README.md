@@ -115,7 +115,7 @@ npm run deploy
 # Frontend
 cd ../frontend
 VITE_WORKER_URL=https://tts-relay.<your-cf-subdomain>.workers.dev \
-VITE_BASE=/new_projects_playground/ \
+VITE_BASE=/tts-pdf-viewer/ \
   npm run build
 # upload dist/ to GitHub Pages / Cloudflare Pages / Vercel / Netlify
 ```
