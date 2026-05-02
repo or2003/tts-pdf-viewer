@@ -1,10 +1,5 @@
 import type { Lang, Sentence, SpanRef } from "./types";
-
-const HEBREW_RE = /[֐-׿]/;
-
-export function detectLang(text: string): Lang {
-  return HEBREW_RE.test(text) ? "he" : "en";
-}
+import { detectLangFor, documentDominantLang } from "./lang";
 
 interface SpanInput {
   pageIndex: number;
@@ -15,8 +10,12 @@ interface SpanInput {
 /**
  * Build sentences spanning across PDF text-layer spans. Each sentence carries
  * back-references to the spans it covers so the UI can highlight them.
+ *
+ * Language assignment is two-pass: first segment, then assign per-sentence lang
+ * using the document's dominant script as the fallback for segments that have
+ * no letters of their own (e.g. list markers like "1." inside a Hebrew doc).
  */
-export function buildSentences(spans: SpanInput[]): Sentence[] {
+export function buildSentences(spans: SpanInput[], primaryLang: Lang = "en"): Sentence[] {
   if (spans.length === 0) return [];
 
   const joiner = " ";
@@ -42,8 +41,9 @@ export function buildSentences(spans: SpanInput[]): Sentence[] {
 
   const segmenter = new Intl.Segmenter(undefined, { granularity: "sentence" });
 
-  const sentences: Sentence[] = [];
-  let id = 0;
+  // Pass 1: collect segments with their span refs.
+  type Draft = { text: string; spans: SpanRef[] };
+  const drafts: Draft[] = [];
   for (const seg of segmenter.segment(fullText)) {
     const raw = seg.segment;
     const trimmed = raw.trim();
@@ -67,13 +67,17 @@ export function buildSentences(spans: SpanInput[]): Sentence[] {
       }
     }
     if (refs.length === 0) continue;
-
-    sentences.push({
-      id: id++,
-      text: trimmed,
-      lang: detectLang(trimmed),
-      spans: refs,
-    });
+    drafts.push({ text: trimmed, spans: refs });
   }
-  return sentences;
+
+  if (drafts.length === 0) return [];
+
+  // Pass 2: compute document-dominant lang and assign per-sentence lang.
+  const docLang = documentDominantLang(drafts.map((d) => d.text), primaryLang);
+  return drafts.map((d, i) => ({
+    id: i,
+    text: d.text,
+    lang: detectLangFor(d.text, docLang),
+    spans: d.spans,
+  }));
 }

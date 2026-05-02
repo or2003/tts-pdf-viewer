@@ -1,9 +1,49 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Controls from "./components/Controls";
 import PdfViewer from "./components/PdfViewer";
+import SettingsPanel from "./components/SettingsPanel";
+import TocDrawer from "./components/TocDrawer";
 import { PlaybackEngine } from "./playback";
-import { checkBackendHealth } from "./tts";
-import type { Sentence } from "./types";
+import { loadVoices, pickDefaultVoice } from "./voices";
+import type { Sentence, Settings, Voice } from "./types";
+
+const SETTINGS_KEY = "tts.settings.v1";
+
+function defaultWorkerUrl(): string {
+  const env = (import.meta as unknown as { env?: { VITE_WORKER_URL?: string } }).env;
+  return env?.VITE_WORKER_URL ?? "/api";
+}
+
+function defaultPrimaryLang(): string {
+  const nav = typeof navigator !== "undefined" ? navigator.language : "en";
+  return (nav || "en").split("-")[0].toLowerCase();
+}
+
+function loadSettings(): Settings {
+  const fallback: Settings = {
+    primaryLang: defaultPrimaryLang(),
+    voicesByLang: {},
+    rate: "+0%",
+    pitch: "+0Hz",
+    workerUrl: defaultWorkerUrl(),
+  };
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<Settings>;
+    return { ...fallback, ...parsed, voicesByLang: parsed.voicesByLang ?? {} };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSettings(s: Settings) {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch {
+    // ignore quota
+  }
+}
 
 export default function App() {
   const [fileBuffer, setFileBuffer] = useState<ArrayBuffer | null>(null);
@@ -13,42 +53,71 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(1.0);
   const [scale, setScale] = useState(1.4);
-  const [backendStatus, setBackendStatus] = useState("checking backend…");
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [voices, setVoices] = useState<Voice[]>([]);
+  const [voicesError, setVoicesError] = useState<string | null>(null);
+  const [status, setStatus] = useState("ready");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tocOpen, setTocOpen] = useState(false);
 
   const engineRef = useRef<PlaybackEngine | null>(null);
 
+  // Mount engine once.
   useEffect(() => {
-    const engine = new PlaybackEngine({
-      onSentenceStart: (i) => {
-        setCurrentIndex(i);
-        setIsPlaying(true);
+    const engine = new PlaybackEngine(
+      {
+        onSentenceStart: (i) => {
+          setCurrentIndex(i);
+          setIsPlaying(true);
+        },
+        onSentenceEnd: () => {},
+        onStop: () => setIsPlaying(false),
+        onError: (err) => {
+          setIsPlaying(false);
+          setStatus(`error: ${err.message}`);
+        },
       },
-      onSentenceEnd: () => {},
-      onStop: () => {
-        setIsPlaying(false);
-      },
-      onError: (err) => {
-        setIsPlaying(false);
-        setBackendStatus(`error: ${err.message}`);
-      },
-    });
+      settings,
+    );
     engineRef.current = engine;
     return () => {
       engine.dispose();
       engineRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Persist settings + push to engine.
   useEffect(() => {
-    let cancelled = false;
-    checkBackendHealth().then((r) => {
-      if (cancelled) return;
-      setBackendStatus(r.ok ? "backend ready" : `backend offline: ${r.detail}`);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    saveSettings(settings);
+    engineRef.current?.setSettings(settings);
+  }, [settings]);
+
+  const loadVoiceList = useCallback(async () => {
+    setVoicesError(null);
+    try {
+      const list = await loadVoices(settings.workerUrl);
+      setVoices(list);
+      engineRef.current?.setVoices(list);
+      // Seed default voices for primary lang if not configured.
+      setSettings((prev) => {
+        const prefix = prev.primaryLang.toLowerCase().split("-")[0];
+        if (prev.voicesByLang[prefix]) return prev;
+        const def = pickDefaultVoice(list, prefix);
+        if (!def) return prev;
+        return { ...prev, voicesByLang: { ...prev.voicesByLang, [prefix]: def.shortName } };
+      });
+      setStatus(`${list.length} voices ready`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setVoicesError(msg);
+      setStatus(`worker offline: ${msg}`);
+    }
+  }, [settings.workerUrl]);
+
+  useEffect(() => {
+    void loadVoiceList();
+  }, [loadVoiceList]);
 
   useEffect(() => {
     engineRef.current?.setSpeed(speed);
@@ -76,7 +145,15 @@ export default function App() {
   }, []);
 
   const onSpanClick = useCallback((sentenceId: number) => {
-    void engineRef.current?.play(sentenceId);
+    engineRef.current?.seekToSentence(sentenceId);
+  }, []);
+
+  const onSeekSentence = useCallback((index: number) => {
+    engineRef.current?.seekToSentence(index);
+  }, []);
+
+  const onSeekPage = useCallback((pageIndex: number) => {
+    engineRef.current?.seekToPage(pageIndex);
   }, []);
 
   const highlighted = useMemo<Sentence | null>(() => {
@@ -88,7 +165,7 @@ export default function App() {
     <div className="app">
       <header>
         <h1>PDF Reader</h1>
-        <div className="subtitle">Local TTS · English (Kokoro/MLX) + Hebrew (Israwave)</div>
+        <div className="subtitle">Microsoft Edge TTS · all languages · skip by sentence or page</div>
       </header>
 
       <Controls
@@ -104,18 +181,41 @@ export default function App() {
         onSpeedChange={setSpeed}
         scale={scale}
         onScaleChange={setScale}
-        backendStatus={backendStatus}
-        sentenceCount={sentences.length}
+        status={status}
+        sentences={sentences}
         currentIndex={currentIndex}
+        onSeekSentence={onSeekSentence}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenToc={() => setTocOpen(true)}
       />
 
       <PdfViewer
         fileBuffer={fileBuffer}
         scale={scale}
+        primaryLang={settings.primaryLang}
         sentences={sentences}
         highlightedSentence={highlighted}
         onSentencesReady={onSentencesReady}
         onSpanClick={onSpanClick}
+      />
+
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={settings}
+        onChange={setSettings}
+        voices={voices}
+        voicesError={voicesError}
+        onReloadVoices={loadVoiceList}
+      />
+
+      <TocDrawer
+        open={tocOpen}
+        onClose={() => setTocOpen(false)}
+        sentences={sentences}
+        currentIndex={currentIndex}
+        onSeekSentence={onSeekSentence}
+        onSeekPage={onSeekPage}
       />
     </div>
   );

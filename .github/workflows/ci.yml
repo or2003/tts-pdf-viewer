@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Type-check and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            worker/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_WORKER_URL: ${{ vars.WORKER_URL || 'http://127.0.0.1:8787' }}
+          VITE_BASE: /new_projects_playground/
+        run: npm run build
+
+      - name: Install worker deps
+        working-directory: worker
+        run: npm ci
+
+      - name: Type-check worker
+        working-directory: worker
+        run: npm run typecheck

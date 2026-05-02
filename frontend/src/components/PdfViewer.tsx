@@ -6,6 +6,7 @@ import type { Sentence } from "../types";
 interface Props {
   fileBuffer: ArrayBuffer | null;
   scale: number;
+  primaryLang: string;
   highlightedSentence: Sentence | null;
   onSentencesReady: (sentences: Sentence[]) => void;
   onSpanClick: (sentenceId: number) => void;
@@ -20,6 +21,7 @@ interface PageSpans {
 export default function PdfViewer({
   fileBuffer,
   scale,
+  primaryLang,
   highlightedSentence,
   onSentencesReady,
   onSpanClick,
@@ -87,9 +89,9 @@ export default function PdfViewer({
           all.push({ pageIndex: i, spanIndex: g++, text: t });
         }
       }
-      onSentencesReady(buildSentences(all));
+      onSentencesReady(buildSentences(all, primaryLang));
     },
-    [doc, onSentencesReady],
+    [doc, onSentencesReady, primaryLang],
   );
 
   const handlePageError = useCallback((e: Error) => {

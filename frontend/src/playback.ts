@@ -1,14 +1,16 @@
-import type { Sentence } from "./types";
+import type { Sentence, Settings, Voice } from "./types";
 import { fetchSentenceAudio } from "./tts";
+import { resolveVoiceForLang } from "./voices";
 
 interface CacheEntry {
   url: string;
   promise: Promise<string>;
   size: number;
+  voice: string;
 }
 
 const PREFETCH_AHEAD = 2;
-const MIN_WAV_BYTES = 1000;
+const MIN_AUDIO_BYTES = 500;
 const MIN_PLAYED_MS = 100;
 const MAX_CONSECUTIVE_SHORT = 2;
 
@@ -22,6 +24,8 @@ export interface PlaybackEvents {
 export class PlaybackEngine {
   private audio: HTMLAudioElement;
   private sentences: Sentence[] = [];
+  private voices: Voice[] = [];
+  private settings: Settings;
   private cache = new Map<number, CacheEntry>();
   private aborts = new Map<number, AbortController>();
   private currentIndex = -1;
@@ -30,8 +34,9 @@ export class PlaybackEngine {
   private events: PlaybackEvents;
   private consecutiveShort = 0;
 
-  constructor(events: PlaybackEvents) {
+  constructor(events: PlaybackEvents, settings: Settings) {
     this.events = events;
+    this.settings = settings;
     this.audio = new Audio();
     this.audio.preservesPitch = true;
     this.audio.addEventListener("ended", this.handleEnded);
@@ -42,6 +47,25 @@ export class PlaybackEngine {
     this.stop();
     this.sentences = sentences;
     this.clearCache();
+  }
+
+  setVoices(voices: Voice[]): void {
+    this.voices = voices;
+  }
+
+  /**
+   * Replace settings. If the voice mapping or worker URL changed, drop the
+   * audio cache so subsequent fetches use the new voice.
+   */
+  setSettings(next: Settings): void {
+    const voiceChanged =
+      this.settings.workerUrl !== next.workerUrl ||
+      this.settings.rate !== next.rate ||
+      this.settings.pitch !== next.pitch ||
+      JSON.stringify(this.settings.voicesByLang) !== JSON.stringify(next.voicesByLang) ||
+      this.settings.primaryLang !== next.primaryLang;
+    this.settings = next;
+    if (voiceChanged) this.clearCache();
   }
 
   setSpeed(speed: number): void {
@@ -59,7 +83,10 @@ export class PlaybackEngine {
 
   async play(fromIndex?: number): Promise<void> {
     if (this.sentences.length === 0) return;
-    if (fromIndex !== undefined) {
+    if (fromIndex !== undefined && fromIndex !== this.currentIndex) {
+      // Hard seek — reset audio element so next playCurrent loads fresh blob.
+      this.audio.pause();
+      this.audio.removeAttribute("src");
       this.currentIndex = fromIndex;
     } else if (this.currentIndex < 0) {
       this.currentIndex = 0;
@@ -72,6 +99,18 @@ export class PlaybackEngine {
     }
     this.playing = true;
     await this.playCurrent();
+  }
+
+  /** Jump to a specific sentence index and start playback. */
+  seekToSentence(index: number): void {
+    if (index < 0 || index >= this.sentences.length) return;
+    void this.play(index);
+  }
+
+  /** Jump to the first sentence whose first span is on the given page. */
+  seekToPage(pageIndex: number): void {
+    const idx = this.sentences.findIndex((s) => s.spans[0]?.pageIndex === pageIndex);
+    if (idx >= 0) this.seekToSentence(idx);
   }
 
   pause(): void {
@@ -111,6 +150,12 @@ export class PlaybackEngine {
     this.clearCache();
   }
 
+  private resolveVoice(idx: number): Voice | null {
+    const sentence = this.sentences[idx];
+    if (!sentence) return null;
+    return resolveVoiceForLang(this.voices, this.settings.voicesByLang, sentence.lang);
+  }
+
   private async playCurrent(): Promise<void> {
     const idx = this.currentIndex;
     if (idx < 0 || idx >= this.sentences.length) {
@@ -126,7 +171,7 @@ export class PlaybackEngine {
       const url = await this.ensureAudio(idx);
       if (!this.playing || this.currentIndex !== idx) return;
       const entry = this.cache.get(idx);
-      if (entry && entry.size > 0 && entry.size < MIN_WAV_BYTES) {
+      if (entry && entry.size > 0 && entry.size < MIN_AUDIO_BYTES) {
         this.playing = false;
         this.events.onError(new Error(`empty audio for sentence ${idx} (${entry.size} bytes)`));
         return;
@@ -150,23 +195,42 @@ export class PlaybackEngine {
   }
 
   private ensureAudio(idx: number): Promise<string> {
+    const sentence = this.sentences[idx];
+    if (!sentence) return Promise.reject(new Error("Out of range"));
+    const voice = this.resolveVoice(idx);
+    if (!voice) {
+      return Promise.reject(new Error(`No voice available for lang "${sentence.lang}"`));
+    }
+
     const hit = this.cache.get(idx);
-    if (hit) return hit.promise;
+    if (hit && hit.voice === voice.shortName) return hit.promise;
+    if (hit && hit.url) URL.revokeObjectURL(hit.url);
+
     const ac = new AbortController();
     this.aborts.set(idx, ac);
-    const sentence = this.sentences[idx];
-    const promise = fetchSentenceAudio(sentence.text, sentence.lang, ac.signal).then((blob) => {
+    const promise = fetchSentenceAudio(
+      this.settings.workerUrl,
+      {
+        text: sentence.text,
+        voice: voice.shortName,
+        provider: voice.provider,
+        rate: this.settings.rate,
+        pitch: this.settings.pitch,
+      },
+      ac.signal,
+    ).then((blob) => {
       const url = URL.createObjectURL(blob);
       const entry = this.cache.get(idx);
       if (entry) {
         entry.url = url;
         entry.size = blob.size;
+        entry.voice = voice.shortName;
       } else {
-        this.cache.set(idx, { url, promise, size: blob.size });
+        this.cache.set(idx, { url, promise, size: blob.size, voice: voice.shortName });
       }
       return url;
     });
-    this.cache.set(idx, { url: "", promise, size: 0 });
+    this.cache.set(idx, { url: "", promise, size: 0, voice: voice.shortName });
     return promise;
   }
 
@@ -175,6 +239,8 @@ export class PlaybackEngine {
       if (entry.url) URL.revokeObjectURL(entry.url);
     }
     this.cache.clear();
+    for (const a of this.aborts.values()) a.abort();
+    this.aborts.clear();
   }
 
   private handleEnded = (): void => {
@@ -185,7 +251,7 @@ export class PlaybackEngine {
       if (this.consecutiveShort >= MAX_CONSECUTIVE_SHORT) {
         this.playing = false;
         this.consecutiveShort = 0;
-        this.events.onError(new Error("playback halted: empty audio (check backend log)"));
+        this.events.onError(new Error("playback halted: empty audio (check Worker log)"));
         return;
       }
     } else {

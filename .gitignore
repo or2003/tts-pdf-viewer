@@ -19,9 +19,14 @@ venv/
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
 
-# Local backend assets (downloaded models, large)
-backend/models/
+# Cloudflare
+.wrangler/
+.dev.vars
+
+# Claude Code
+.claude/
 
 # Logs
 *.log

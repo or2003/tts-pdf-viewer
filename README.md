@@ -1,125 +1,156 @@
-# PDF Reader
+# PDF Reader · Multilingual TTS
 
-A web app that reads PDFs aloud with sentence-level highlighting. Tested on MacBook Pro M3 Pro. Supports **English** and **Hebrew**.
+A web app that reads PDFs aloud with sentence-level highlighting. Uses **Google Cloud Text-to-Speech (Neural2 / Wavenet)** as the primary engine, with **Microsoft Edge TTS** as automatic fallback. Together: ~140 languages, hundreds of neural voices. Mobile-friendly. No Python.
 
-- **English** → [Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M) on [mlx-audio](https://github.com/Blaizzy/mlx-audio), local (Apple-native, ~100× realtime on M-series)
-- **Hebrew** → [Microsoft Edge TTS](https://github.com/rany2/edge-tts) neural voices (cloud, no API key required, needs network at request time)
-- **PDF rendering** → PDF.js with text layer alignment for highlighting
-- **Frontend** → Vite + React + TypeScript
+## Architecture
 
-English runs on-device after the one-time Kokoro download. Hebrew streams from Microsoft's public Edge TTS endpoint per request — natural neural voices, but requires network connectivity.
+```
+                                                              ┌─ Google Cloud TTS (primary)
+                                                              │  https://texttospeech.googleapis.com
+┌─────────────────────────┐    POST /tts             ┌────────┴───────────────┐
+│  Static frontend        │ ──{ text, voice, prov }─►│  Cloudflare Worker     │
+│  (Vite + React + TS)    │ ◄────── audio/mpeg ──────│  worker/ (tts-relay)   │
+└─────────────────────────┘                          └────────┬───────────────┘
+                                                              │  on Google failure / no key
+                                                              └─ Microsoft Edge "Read Aloud" (fallback)
+                                                                 wss://speech.platform.bing.com/...
+```
+
+The Worker dispatches each request to the user-selected provider, and on any failure (quota, network, missing key) silently retries via the other provider so the frontend never sees an error.
 
 ## Features
 
-- Drop in any PDF, hit play, listen to it.
-- The currently spoken sentence is highlighted directly on the rendered PDF.
-- Click any sentence to jump playback there.
-- Speed control (0.5×–3×) without pitch shift.
-- Auto language detection per sentence (Hebrew Unicode block → Edge TTS; otherwise Kokoro).
-- Sentences are prefetched ahead of playback, so transitions are seamless.
+- Drop in any PDF, hit play.
+- The currently spoken sentence is highlighted on the rendered PDF.
+- **Skip to any sentence** (scrubber slider) or **page** (TOC drawer).
+- **Per-language voice picker** — pick a default voice for each language you read.
+- **Auto language detection per sentence** by Unicode script. Letterless segments like `1.` `2.` `3.` inside a Hebrew document inherit the document's dominant language (this fixes a real bug where numbered list markers were spoken in English).
+- Speed control (0.5×–3×) without pitch shift; rate/pitch tunable in settings.
+- Prefetches the next 2 sentences for seamless transitions.
+- Mobile-friendly: bottom-fixed transport bar, full-width drawers, 44×44 touch targets.
 
 ## Project layout
 
 ```
-backend/
-  app.py                   FastAPI server, POST /tts, GET /health
-  engines/kokoro.py        English: Kokoro 82M via mlx-audio (lazy-loaded)
-  engines/edge_tts.py      Hebrew: Microsoft Edge TTS (cloud, per-request)
-  setup_models.sh          One-shot download of Kokoro weights
-  requirements.txt
+worker/                      Cloudflare Worker — proxies browser ↔ Edge TTS WSS
+  src/index.ts               POST /tts, GET /voices, GET /health
+  wrangler.toml              CF config; dev port 8787
+  package.json
 frontend/
-  src/pdf.ts               PDF.js loader + page renderer with text layer
-  src/sentences.ts         Intl.Segmenter sentence splitting + Hebrew detection
-  src/playback.ts          Playback engine: queue, prefetch, speed control
-  src/tts.ts               /api client
+  src/pdf.ts                 PDF.js loader + per-page renderer with text layer
+  src/sentences.ts           Intl.Segmenter splitting + back-references to PDF spans
+  src/lang.ts                Script-aware BCP-47 detection + document-dominant fallback
+  src/voices.ts              Voice catalog cache + per-language resolver
+  src/tts.ts                 Worker client: POST /tts, GET /voices
+  src/playback.ts            Playback engine: prefetch, voice lookup, seek
   src/components/
-    PdfViewer.tsx          PDF render, per-page text layer, sentence highlight
-    Controls.tsx           File picker, transport, speed/zoom sliders
-  src/App.tsx              Glue
-  vite.config.ts           proxies /api → http://127.0.0.1:8765
+    PdfViewer.tsx            PDF render + sentence highlight
+    Controls.tsx             File picker, transport, scrubber, settings/TOC buttons
+    SentenceScrubber.tsx     Slider with hover tooltip
+    TocDrawer.tsx            Per-page table of contents
+    SettingsPanel.tsx        Voice picker, primary lang, rate/pitch, worker URL
+  src/App.tsx                Glue + settings persistence
+  vite.config.ts             proxies /api → $VITE_WORKER_URL || 127.0.0.1:8787
 ```
 
-## Requirements
+## Local development
 
-- **Hardware**: Apple Silicon Mac (M1/M2/M3/M4). MLX won't accelerate on Intel.
-- **Python**: 3.10+
-- **Node.js**: 18+
-- **Disk**: ~350 MB for Kokoro weights (one-time download).
-- **Network**: required at request time for Hebrew (Edge TTS streams from Microsoft's endpoint).
-
-## Setup
-
-### 1. Backend
+You need two things running: the Worker (port 8787) and the frontend (port 5173).
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-bash setup_models.sh          # downloads Kokoro weights once
-python app.py                  # serves on http://127.0.0.1:8765
-```
+# Terminal 1 — Worker
+cd worker
+npm install
+npm run dev               # http://127.0.0.1:8787
 
-`setup_models.sh` downloads Kokoro 82M (bf16) into the Hugging Face cache (`~/.cache/huggingface`). Edge TTS needs no pre-cache — it streams from Microsoft per request.
-
-Kokoro lazy-loads on first English synthesis call. Edge TTS makes a fresh streaming request each time.
-
-### 2. Frontend
-
-In a second terminal:
-
-```bash
+# Terminal 2 — Frontend
 cd frontend
 npm install
-npm run dev                    # opens http://127.0.0.1:5173
+npm run dev               # http://127.0.0.1:5173
 ```
 
-Open <http://127.0.0.1:5173>, pick a PDF, hit ▶.
+Open <http://127.0.0.1:5173>, drop in a PDF, hit ▶.
 
-## Configuration
+## Deploy
 
-| Setting | Where | Default |
-|---|---|---|
-| English voice | `backend/engines/kokoro.py` `DEFAULT_VOICE` | `af_heart` |
-| English language code | `backend/engines/kokoro.py` `DEFAULT_LANG_CODE` | `a` (American) — try `b` for British |
-| Server port | `backend/app.py` (`uvicorn.run`) | `8765` |
-| Vite proxy target | `frontend/vite.config.ts` | `127.0.0.1:8765` |
-| Hebrew voice | `EDGE_TTS_HE_VOICE` env var | `he-IL-AvriNeural` (try `he-IL-HilaNeural` for female) |
-| Hebrew speech rate | `EDGE_TTS_RATE` env var | `+0%` (e.g. `-10%` for slower) |
-| Hebrew pitch | `EDGE_TTS_PITCH` env var | `+0Hz` |
+### One-time setup (do this once before the first deploy)
 
-Available Kokoro voices include `af_heart`, `af_bella`, `am_adam`, `bf_alice`, etc. — see the [mlx-audio readme](https://github.com/Blaizzy/mlx-audio).
+**Cloudflare:**
 
-## API
+1. Sign in to <https://dash.cloudflare.com>.
+2. **Profile → API Tokens → Create Token → "Edit Cloudflare Workers"** template. Copy the token.
+3. **Workers & Pages → Overview** — copy your **Account ID** (right sidebar).
 
-### `POST /tts`
+**Google Cloud (recommended — better quality, ~1M chars/month free):**
 
-```json
-{ "text": "Hello world.", "lang": "en" }
+1. Sign in to <https://console.cloud.google.com> and create a project.
+2. **APIs & Services → Library** → enable **Cloud Text-to-Speech API**.
+3. **APIs & Services → Credentials → Create credentials → API key**. Copy the key.
+4. (Recommended) Edit the key, set **API restrictions → Restrict key → Cloud Text-to-Speech API**.
+
+If you skip Google Cloud entirely, the app still works — it falls back to Microsoft Edge TTS for free.
+
+**GitHub:**
+
+1. Repo → **Settings → Secrets and variables → Actions**:
+   - **Secrets** → add `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and (optional) `GOOGLE_API_KEY`.
+   - **Variables** → add `WORKER_URL` set to `https://tts-relay.<your-cf-subdomain>.workers.dev` (you'll get this after the first Worker deploy — see below).
+2. Repo → **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+
+**First deploy:** push to `main`. The first run of `Deploy → worker` will publish the Worker (and push `GOOGLE_API_KEY` as a Worker secret if you set the GitHub secret). Copy the resulting URL into `WORKER_URL` repo variable, then re-run the workflow (Actions tab → Deploy → "Re-run failed jobs" or push an empty commit). Subsequent deploys are fully automatic.
+
+### CI/CD pipelines
+
+- `.github/workflows/ci.yml` — runs on every PR + non-main push. Type-checks and builds both packages.
+- `.github/workflows/deploy.yml` — runs on push to `main`. Deploys the Worker, then builds the frontend with `VITE_WORKER_URL` baked in and publishes to GitHub Pages.
+
+### Manual deploy (if you'd rather not use Actions)
+
+```bash
+# Worker
+cd worker
+npx wrangler login            # one-time
+npm run deploy
+
+# Frontend
+cd ../frontend
+VITE_WORKER_URL=https://tts-relay.<your-cf-subdomain>.workers.dev \
+VITE_BASE=/new_projects_playground/ \
+  npm run build
+# upload dist/ to GitHub Pages / Cloudflare Pages / Vercel / Netlify
 ```
 
-Returns: `audio/wav` bytes (16-bit PCM, mono, engine-native sample rate).
+### CORS
 
-`lang` must be `"en"` or `"he"`.
+The Worker reads `ALLOWED_ORIGINS` from `wrangler.toml` (`[vars]` section). It currently allows:
 
-### `GET /health`
+- `https://or2003.github.io` (GitHub Pages)
+- `http://localhost:5173`, `http://127.0.0.1:5173` (local dev)
 
-Reports per-engine load status and sample rate.
+Add any custom domain to that list and redeploy.
 
-## Architecture notes
+## Settings
 
-- **Speed control** uses `HTMLAudioElement.playbackRate` with `preservesPitch = true`, so a 2× speedup doesn't chipmunk the voice. This is uniform across both engines and avoids round-tripping the model on every speed change.
-- **Sentence highlighting** works by rendering the PDF.js text layer (invisible spans that align with the rendered canvas), splitting the concatenated text with `Intl.Segmenter`, and mapping each sentence back to its source spans. The active sentence's spans get a `.tts-highlight` class.
-- **Prefetch** keeps the next 2 sentences' audio in flight via `AbortController`-cancelable fetches.
+Click the ⚙ icon in the toolbar.
 
-## Troubleshooting
+- **Worker URL** — for self-hosting the relay elsewhere.
+- **Primary language** — fallback for ambiguous text. The app uses this when a sentence has no letters of its own (`"1."`, `"—"`) and the document doesn't have an obvious dominant script.
+- **Voice per language** — pick any voice from Google or Microsoft's catalog for each language you read. Each voice is tagged with its provider in the dropdown. Default picks prefer Google when available.
+- **Rate** / **Pitch** — passed as SSML prosody (Edge) or `audioConfig` numerics (Google).
 
-- **Edge TTS request fails** — check network connectivity. Microsoft's endpoint occasionally rate-limits; retry usually works.
-- **`backend offline` in the UI** — the FastAPI server isn't running on 8765, or CORS is blocked. Check `python app.py` is up.
-- **First English synthesis is slow** — Kokoro lazy-loads on first request (~3-5s on M3 Pro). Subsequent calls are fast. Edge TTS has a steady ~1-2s/sentence latency from network round-trip.
+Settings persist in `localStorage`. The voice catalog is cached in `localStorage` for 24 hours.
 
-## License
+## Local dev with Google TTS
 
-The TTS engines have their own terms:
-- Kokoro: Apache 2.0 (model weights)
-- Edge TTS: Microsoft's public TTS endpoint, accessed via the [edge-tts](https://github.com/rany2/edge-tts) library. Use is subject to Microsoft's terms of service — not intended for production / high-volume use.
+1. `cp worker/.dev.vars.example worker/.dev.vars`
+2. Paste your `GOOGLE_API_KEY` into `worker/.dev.vars` (gitignored).
+3. Restart `wrangler dev`.
+
+Without `.dev.vars`, the Worker runs in Edge-only mode.
+
+## Notes
+
+- **Google TTS** is the primary path. Free tier is generous (~1M chars/month for Neural2/Wavenet, ~100K for Studio/Chirp HD as of 2025) — verify on Google's pricing page if you're worried about overage.
+- **Edge TTS** is Microsoft's free, undocumented endpoint (the same one Edge browser's "Read Aloud" uses). Don't ship a high-volume product on it. The Worker uses the well-known `TrustedClientToken` from the python `edge-tts` library and generates a `Sec-MS-GEC` request token. If Microsoft rotates the protocol, bump `CHROMIUM_FULL` / `CHROMIUM_MAJOR` in `worker/src/index.ts` to whatever python `edge-tts` is using.
+- The Worker returns `X-TTS-Provider` and `X-TTS-Fallback` headers on each `/tts` response so you can confirm which provider served any request from the browser DevTools.
+- License: the TTS endpoints belong to their respective vendors; usage is subject to their terms.
